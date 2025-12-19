@@ -34,11 +34,5 @@ def run_aggregation(collection_name: str, pipeline_json: str) -> str:
     except Exception as e:
         return f"Error ejecutando pipeline: {str(e)}"
 
-# --- AQUÍ ESTÁ EL CAMBIO CLAVE ---
-# Eliminamos la línea "app = mcp._http_server" que daba error.
-# Y añadimos el bloque de ejecución directa:
-
 if __name__ == "__main__":
-    # Esto arranca el servidor SSE automáticamente en el puerto 8000
-    # y escucha en 0.0.0.0 (necesario para Docker/Koyeb)
     mcp.run(transport="http", host="0.0.0.0", port=8000)
