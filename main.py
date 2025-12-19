@@ -54,9 +54,9 @@ class SecurityWrapper:
         
         # Log inicial de estado
         if self.api_key:
-            print(f"🔒 SEGURIDAD: Middleware cargado. Clave configurada (Longitud: {len(self.api_key)})")
+            print(f"SEGURIDAD: Middleware cargado. Clave configurada (Longitud: {len(self.api_key)})")
         else:
-            print("🚨 CRÍTICO: No hay MCP_API_KEY. El servidor rechazará todo por defecto.")
+            print("CRÍTICO: No hay MCP_API_KEY. El servidor rechazará todo por defecto.")
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         # Dejar pasar health checks y metadatos del protocolo
@@ -70,11 +70,11 @@ class SecurityWrapper:
             return
 
         # LOG CHIVATO: Para confirmar que el código se ejecuta
-        print(f"👀 INTERCEPTADO: Petición a {path}")
+        print(f"INTERCEPTADO: Petición a {path}")
 
         # 1. Fail-Close: Si no hay clave en el servidor, error 500
         if not self.api_key:
-            print("❌ BLOQUEADO: Falta configuración de API Key en servidor.")
+            print("BLOQUEADO: Falta configuración de API Key en servidor.")
             response = JSONResponse(status_code=500, content={"error": "Server Security Config Missing"})
             await response(scope, receive, send)
             return
@@ -85,13 +85,13 @@ class SecurityWrapper:
         expected = f"Bearer {self.api_key}"
 
         if auth_header != expected:
-            print(f"🚫 RECHAZADO: Credencial incorrecta.")
+            print(f"RECHAZADO: Credencial incorrecta.")
             response = JSONResponse(status_code=401, content={"error": "Unauthorized"})
             await response(scope, receive, send)
             return
 
         # 3. Éxito
-        print("✅ PASE CONCEDIDO")
+        print("PASE CONCEDIDO")
         await self.app(scope, receive, send)
 
 
@@ -117,5 +117,4 @@ final_app = SecurityWrapper(internal_app)
 # --- 4. EJECUCIÓN MANUAL ---
 if __name__ == "__main__":
     # En lugar de mcp.run(), usamos uvicorn directamente sobre nuestra app protegida
-    print("🚀 Arrancando servidor protegido manualmente con Uvicorn...")
     uvicorn.run(final_app, host="0.0.0.0", port=8000)
