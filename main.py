@@ -12,7 +12,7 @@ MONGO_URI = os.getenv("MONGO_URI")
 client = MongoClient(MONGO_URI)
 db = client["sample_mflix"]
 
-@mcp.tool()
+# NOTA: Añadimos **kwargs para absorber los metadatos extra que envía n8n
 @mcp.tool()
 def run_aggregation(collection_name: str, pipeline_json: str, **kwargs) -> str:
     """
@@ -20,6 +20,7 @@ def run_aggregation(collection_name: str, pipeline_json: str, **kwargs) -> str:
     Args:
         collection_name: 'movies', 'comments', etc.
         pipeline_json: Array JSON. Ej: '[{"$match": ...}]'
+        **kwargs: Captura argumentos extra enviados por n8n (update_id, etc.) para evitar errores.
     """
     try:
         if collection_name not in db.list_collection_names():
