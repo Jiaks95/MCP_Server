@@ -6,22 +6,12 @@ from bson import json_util
 from typing import Dict, Any
 import certifi
 
-# Imports necesarios
+# Imports para Middleware (Starlette viene dentro de FastAPI/FastMCP)
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Scope, Receive, Send
 
 # 1. Definición del servidor
 mcp = FastMCP("CineMCP")
-
-# --- DEBUG CHIVATO ---
-import sys
-api_key = os.getenv("MCP_API_KEY")
-print(f"--- DEBUG: Iniciando Servidor ---")
-if api_key:
-    print(f"--- DEBUG: Clave detectada: {api_key[:3]}*** (Longitud: {len(api_key)}) ---")
-else:
-    print("--- DEBUG: ALERTA!! No se detectó ninguna MCP_API_KEY en el entorno. El servidor está ABIERTO. ---")
-# ---------------------
 
 # 2. Middleware ASGI Puro (Compatible con Streaming/SSE)
 class SecureASGIMiddleware:
@@ -29,32 +19,27 @@ class SecureASGIMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        # A. Solo interceptamos peticiones HTTP (dejamos pasar eventos de ciclo de vida)
+        # A. Solo interceptamos HTTP (dejamos pasar health checks y lifecycles)
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
-        # B. Excluir Health Check (para que Koyeb no mate el servidor)
         if scope["path"] in ["/health", "/"]:
             await self.app(scope, receive, send)
             return
 
-        # C. Lógica de Seguridad
+        # B. Lógica de Seguridad
         server_api_key = os.getenv("MCP_API_KEY")
         
-        # Si hay clave configurada, verificamos
         if server_api_key:
-            # En ASGI, los headers vienen en bytes y como lista de tuplas
             headers = dict(scope.get("headers", []))
-            
-            # Buscamos 'authorization' (siempre en minúsculas en ASGI)
             auth_header_bytes = headers.get(b"authorization", b"")
             auth_header = auth_header_bytes.decode("utf-8")
             
+            # Validación estricta
             expected = f"Bearer {server_api_key}"
             
             if auth_header != expected:
-                # Si falla, cortamos aquí y devolvemos 401
                 response = JSONResponse(
                     status_code=401, 
                     content={"error": "Unauthorized: Invalid API Key"}
@@ -62,15 +47,37 @@ class SecureASGIMiddleware:
                 await response(scope, receive, send)
                 return
 
-        # D. Si todo está bien, pasamos la bola a la app original (Streaming intacto)
         await self.app(scope, receive, send)
 
-# 3. Inyección del Middleware
-# Usamos .add_middleware con nuestra clase ASGI pura
-if hasattr(mcp, '_fastapi_app'):
-    mcp._fastapi_app.add_middleware(SecureASGIMiddleware)
+# 3. INYECCIÓN ROBUSTA DE SEGURIDAD
+# Intentamos encontrar la app de FastAPI en varios lugares conocidos
+app_found = None
+
+# Lista de posibles nombres internos donde FastMCP esconde la app
+possible_attrs = ['_fastapi_app', 'fastapi_app', '_http_app', 'http_app']
+
+print("--- DEBUG: Buscando instancia de FastAPI ---")
+for attr in possible_attrs:
+    if hasattr(mcp, attr):
+        print(f"--- DEBUG: Encontrada app en '{attr}' ---")
+        app_found = getattr(mcp, attr)
+        # Si es un método (como .http_app()), lo llamamos para obtener el objeto
+        if callable(app_found):
+             print(f"--- DEBUG: '{attr}' es un método, llamándolo... ---")
+             try:
+                app_found = app_found()
+             except Exception as e:
+                print(f"--- DEBUG: Error al llamar a {attr}: {e} ---")
+                continue
+        break
+
+if app_found:
+    print("--- SEGURIDAD: Inyectando Middleware... ---")
+    app_found.add_middleware(SecureASGIMiddleware)
 else:
-    print("WARNING: No se pudo inyectar seguridad. '_fastapi_app' no encontrado.")
+    print("--- CRÍTICO: No se encontró la app subyacente. El servidor NO tiene seguridad. ---")
+    # Imprimimos todos los atributos para que tú (el usuario) me los digas
+    print(f"--- DEBUG DUMP: Atributos disponibles en 'mcp': {dir(mcp)} ---")
 
 # 4. Conexión BD
 MONGO_URI = os.getenv("MONGO_URI")
@@ -86,13 +93,11 @@ def run_aggregation(
     toolCallId: str = ""            
 ) -> str:
     try:
-        # Validación de seguridad extra: Evitar inyección en colecciones del sistema
         if collection_name not in db.list_collection_names():
              return f"Error: La colección '{collection_name}' no existe."
 
         target_collection = db[collection_name]
         pipeline = json.loads(pipeline_json)
-        
         cursor = target_collection.aggregate(pipeline)
         results = list(cursor)
         return json_util.dumps(results)
