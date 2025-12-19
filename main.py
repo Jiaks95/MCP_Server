@@ -6,80 +6,94 @@ from bson import json_util
 from typing import Dict, Any
 import certifi
 
-# Imports para Middleware (Starlette viene dentro de FastAPI/FastMCP)
+# Imports del sistema
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Scope, Receive, Send
 
 # 1. Definición del servidor
 mcp = FastMCP("CineMCP")
 
-# 2. Middleware ASGI Puro (Compatible con Streaming/SSE)
-class SecureASGIMiddleware:
+# 2. Middleware "Paranoico" (Fail-Close)
+class ParanoidMiddleware:
     def __init__(self, app: ASGIApp):
         self.app = app
+        # Leemos la clave UNA sola vez al inicio para ver si existe
+        self.api_key = os.getenv("MCP_API_KEY")
+        if not self.api_key:
+            print("🚨 PELIGRO: NO SE DETECTÓ 'MCP_API_KEY' EN EL ENTORNO.")
+            print("🚨 EL SERVIDOR RECHAZARÁ TODAS LAS CONEXIONES POR SEGURIDAD.")
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        # A. Solo interceptamos HTTP (dejamos pasar health checks y lifecycles)
+        # Solo filtramos HTTP (dejamos pasar el ciclo de vida de la app)
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
-        if scope["path"] in ["/health", "/"]:
+        # Excepción para Health Checks (para que Koyeb no mate el servicio)
+        if scope["path"] in ["/", "/health"]:
             await self.app(scope, receive, send)
             return
 
-        # B. Lógica de Seguridad
-        server_api_key = os.getenv("MCP_API_KEY")
-        
-        if server_api_key:
-            headers = dict(scope.get("headers", []))
-            auth_header_bytes = headers.get(b"authorization", b"")
-            auth_header = auth_header_bytes.decode("utf-8")
-            
-            # Validación estricta
-            expected = f"Bearer {server_api_key}"
-            
-            if auth_header != expected:
-                response = JSONResponse(
-                    status_code=401, 
-                    content={"error": "Unauthorized: Invalid API Key"}
-                )
-                await response(scope, receive, send)
-                return
+        # --- LOGGING EN VIVO ---
+        # Imprimimos quién intenta entrar
+        print(f"🔒 ACCESO: Intento de conexión a ruta: {scope['path']}")
 
+        # --- REGLA 1: SI NO HAY CLAVE CONFIGURADA EN KOYEB, NADIE ENTRA ---
+        if not self.api_key:
+            print("❌ BLOQUEADO: Error de configuración del servidor (Falta API Key)")
+            response = JSONResponse(
+                status_code=500, 
+                content={"error": "SERVER SECURITY CONFIG ERROR: API Key missing in environment"}
+            )
+            await response(scope, receive, send)
+            return
+
+        # --- REGLA 2: VALIDAR EL HEADER ---
+        headers = dict(scope.get("headers", []))
+        auth_header_bytes = headers.get(b"authorization", b"")
+        auth_header = auth_header_bytes.decode("utf-8")
+        
+        # Debemos ser estrictos: "Bearer <CLAVE>"
+        expected_token = f"Bearer {self.api_key}"
+
+        if auth_header != expected_token:
+            # Chivato en los logs para ver qué enviaron (ocultando parte por seguridad)
+            received_preview = auth_header[:10] + "..." if auth_header else "EMPTY"
+            print(f"❌ BLOQUEADO: Credencial inválida. Recibido: '{received_preview}'")
+            
+            response = JSONResponse(
+                status_code=401, 
+                content={"error": "Unauthorized: Access Denied"}
+            )
+            await response(scope, receive, send)
+            return
+
+        # Si pasa todo, entra
+        print("✅ ACCESO CONCEDIDO")
         await self.app(scope, receive, send)
 
-# 3. INYECCIÓN ROBUSTA DE SEGURIDAD
-# Intentamos encontrar la app de FastAPI en varios lugares conocidos
+# 3. Inyección Robusta
+# Buscamos la app oculta de FastMCP
 app_found = None
-
-# Lista de posibles nombres internos donde FastMCP esconde la app
 possible_attrs = ['_fastapi_app', 'fastapi_app', '_http_app', 'http_app']
 
-print("--- DEBUG: Buscando instancia de FastAPI ---")
 for attr in possible_attrs:
     if hasattr(mcp, attr):
-        print(f"--- DEBUG: Encontrada app en '{attr}' ---")
         app_found = getattr(mcp, attr)
-        # Si es un método (como .http_app()), lo llamamos para obtener el objeto
         if callable(app_found):
-             print(f"--- DEBUG: '{attr}' es un método, llamándolo... ---")
              try:
                 app_found = app_found()
-             except Exception as e:
-                print(f"--- DEBUG: Error al llamar a {attr}: {e} ---")
+             except:
                 continue
         break
 
 if app_found:
-    print("--- SEGURIDAD: Inyectando Middleware... ---")
-    app_found.add_middleware(SecureASGIMiddleware)
+    print("🛡️ SEGURIDAD ACTIVADA: Inyectando Middleware Paranoico...")
+    app_found.add_middleware(ParanoidMiddleware)
 else:
-    print("--- CRÍTICO: No se encontró la app subyacente. El servidor NO tiene seguridad. ---")
-    # Imprimimos todos los atributos para que tú (el usuario) me los digas
-    print(f"--- DEBUG DUMP: Atributos disponibles en 'mcp': {dir(mcp)} ---")
+    print("💀 ERROR CRÍTICO: No se pudo inyectar seguridad. El servidor está vulnerable.")
 
-# 4. Conexión BD
+# 4. Base de Datos
 MONGO_URI = os.getenv("MONGO_URI")
 client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
 db = client["sample_mflix"]
@@ -101,7 +115,6 @@ def run_aggregation(
         cursor = target_collection.aggregate(pipeline)
         results = list(cursor)
         return json_util.dumps(results)
-
     except Exception as e:
         return f"Error ejecutando pipeline: {str(e)}"
 
