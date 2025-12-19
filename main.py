@@ -6,7 +6,7 @@ from bson import json_util
 from typing import Dict, Any
 import certifi
 
-# Imports para el Middleware de Seguridad
+# Imports para Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -14,22 +14,22 @@ from starlette.responses import JSONResponse
 # 1. Definición del servidor
 mcp = FastMCP("CineMCP")
 
-# 2. Clase de Middleware de Autenticación
+# 2. Middleware de Autenticación
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # Rutas excluidas (opcional, por si quieres dejar el health check libre)
+        # Permitir health checks sin auth (opcional, buena práctica en Koyeb)
         if request.url.path == "/health":
              return await call_next(request)
 
         server_api_key = os.getenv("MCP_API_KEY")
         
-        # Si no hay variable de entorno, dejamos pasar (Modo Inseguro / Dev)
+        # Modo DEV: Si no hay clave configurada en el servidor, pasa todo
         if not server_api_key:
             return await call_next(request)
 
         auth_header = request.headers.get("Authorization")
         
-        # Verificamos formato "Bearer <TOKEN>"
+        # Validación estricta: "Bearer TU_CLAVE"
         if not auth_header or auth_header != f"Bearer {server_api_key}":
             return JSONResponse(
                 status_code=401, 
@@ -38,11 +38,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
         
         return await call_next(request)
 
-# 3. Inyectamos el middleware en la app de FastAPI subyacente
-# FastMCP usa FastAPI internamente, accedemos a la instancia así:
-mcp.fastapi_app.add_middleware(AuthMiddleware)
+# 3. INYECCIÓN DEL MIDDLEWARE (CORREGIDO)
+# Usamos _fastapi_app porque la librería lo mantiene como privado
+if hasattr(mcp, '_fastapi_app'):
+    mcp._fastapi_app.add_middleware(AuthMiddleware)
+else:
+    # Bloque de debug por si la librería cambia de versión
+    print("ADVERTENCIA: No se pudo encontrar _fastapi_app. Buscando atributos disponibles...")
+    print(dir(mcp)) 
+    # Si ves esto en los logs, significa que el nombre interno es otro.
 
-# 4. Conexión BD (con Certifi para SSL)
+# 4. Conexión BD
 MONGO_URI = os.getenv("MONGO_URI")
 client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
 db = client["sample_mflix"]
@@ -55,9 +61,6 @@ def run_aggregation(
     message: Dict[str, Any] = {},   
     toolCallId: str = ""            
 ) -> str:
-    """
-    Ejecuta un pipeline de agregación en MongoDB.
-    """
     try:
         if collection_name not in db.list_collection_names():
              return f"Error: La colección '{collection_name}' no existe."
@@ -65,9 +68,9 @@ def run_aggregation(
         target_collection = db[collection_name]
         pipeline = json.loads(pipeline_json)
         
-        # Límite de seguridad forzado en código (opcional pero recomendado)
-        # pipeline.append({"$limit": 5}) 
-        
+        # Opcional: Forzar límite aquí también por seguridad
+        # pipeline.append({"$limit": 5})
+
         cursor = target_collection.aggregate(pipeline)
         results = list(cursor)
         return json_util.dumps(results)
