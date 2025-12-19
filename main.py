@@ -3,40 +3,36 @@ from pymongo import MongoClient
 import os
 import json
 from bson import json_util
-from typing import Dict, Any # Quitamos Optional de aquí
+from typing import Dict, Any
+import certifi  # <--- IMPORTANTE: Importar certifi
 
 # Definición del servidor
 mcp = FastMCP("CineMCP")
 
 # Conexión BD
 MONGO_URI = os.getenv("MONGO_URI")
-client = MongoClient(MONGO_URI)
+
+# --- CORRECCIÓN SSL ---
+# Usamos certifi.where() para decirle a PyMongo dónde están los certificados seguros
+client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
 db = client["sample_mflix"]
 
 @mcp.tool()
 def run_aggregation(
     collection_name: str, 
     pipeline_json: str,
-    # --- CORRECCIÓN ---
-    # Usamos tipos estrictos con valores por defecto. 
-    # Esto genera un esquema "type": "integer" (o string/object) limpio, sin unions.
     update_id: int = 0,             
     message: Dict[str, Any] = {},   
     toolCallId: str = ""            
 ) -> str:
-    """
-    Ejecuta un pipeline de agregación en MongoDB.
-    Args:
-        collection_name: 'movies', 'comments', etc.
-        pipeline_json: Array JSON. Ej: '[{"$match": ...}]'
-        update_id: Ignorado.
-        message: Ignorado.
-        toolCallId: Ignorado.
-    """
+    # ... (El resto de tu código sigue igual)
     try:
+        # Una pequeña optimización: verificar conexión antes de operar
+        # client.admin.command('ping') 
+        
         if collection_name not in db.list_collection_names():
              return f"Error: La colección '{collection_name}' no existe."
-
+             
         target_collection = db[collection_name]
         pipeline = json.loads(pipeline_json)
         
