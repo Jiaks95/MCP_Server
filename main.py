@@ -41,4 +41,4 @@ def run_aggregation(collection_name: str, pipeline_json: str) -> str:
 if __name__ == "__main__":
     # Esto arranca el servidor SSE automáticamente en el puerto 8000
     # y escucha en 0.0.0.0 (necesario para Docker/Koyeb)
-    mcp.run(transport="sse", host="0.0.0.0", port=8000)
+    mcp.run(transport="sse", port=8000)
