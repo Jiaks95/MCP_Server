@@ -3,7 +3,7 @@ from pymongo import MongoClient
 import os
 import json
 from bson import json_util
-from typing import Optional, Dict, Any
+from typing import Dict, Any # Quitamos Optional de aquí
 
 # Definición del servidor
 mcp = FastMCP("CineMCP")
@@ -17,18 +17,21 @@ db = client["sample_mflix"]
 def run_aggregation(
     collection_name: str, 
     pipeline_json: str,
-    # --- PARÁMETROS DE ABSORCIÓN PARA N8N ---
-    # Los definimos explícitamente para evitar el error de **kwargs
-    update_id: Optional[int] = None,
-    message: Optional[Dict[str, Any]] = None,
-    toolCallId: Optional[str] = None
+    # --- CORRECCIÓN ---
+    # Usamos tipos estrictos con valores por defecto. 
+    # Esto genera un esquema "type": "integer" (o string/object) limpio, sin unions.
+    update_id: int = 0,             
+    message: Dict[str, Any] = {},   
+    toolCallId: str = ""            
 ) -> str:
     """
     Ejecuta un pipeline de agregación en MongoDB.
     Args:
         collection_name: 'movies', 'comments', etc.
         pipeline_json: Array JSON. Ej: '[{"$match": ...}]'
-        update_id, message, toolCallId: Metadatos de n8n (ignorados).
+        update_id: Ignorado.
+        message: Ignorado.
+        toolCallId: Ignorado.
     """
     try:
         if collection_name not in db.list_collection_names():
