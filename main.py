@@ -13,6 +13,16 @@ from starlette.types import ASGIApp, Scope, Receive, Send
 # 1. Definición del servidor
 mcp = FastMCP("CineMCP")
 
+# --- DEBUG CHIVATO ---
+import sys
+api_key = os.getenv("MCP_API_KEY")
+print(f"--- DEBUG: Iniciando Servidor ---")
+if api_key:
+    print(f"--- DEBUG: Clave detectada: {api_key[:3]}*** (Longitud: {len(api_key)}) ---")
+else:
+    print("--- DEBUG: ALERTA!! No se detectó ninguna MCP_API_KEY en el entorno. El servidor está ABIERTO. ---")
+# ---------------------
+
 # 2. Middleware ASGI Puro (Compatible con Streaming/SSE)
 class SecureASGIMiddleware:
     def __init__(self, app: ASGIApp):
