@@ -6,47 +6,61 @@ from bson import json_util
 from typing import Dict, Any
 import certifi
 
-# Imports para Middleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
+# Imports necesarios
 from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Scope, Receive, Send
 
 # 1. Definición del servidor
 mcp = FastMCP("CineMCP")
 
-# 2. Middleware de Autenticación
-class AuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        # Permitir health checks sin auth (opcional, buena práctica en Koyeb)
-        if request.url.path == "/health":
-             return await call_next(request)
+# 2. Middleware ASGI Puro (Compatible con Streaming/SSE)
+class SecureASGIMiddleware:
+    def __init__(self, app: ASGIApp):
+        self.app = app
 
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        # A. Solo interceptamos peticiones HTTP (dejamos pasar eventos de ciclo de vida)
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # B. Excluir Health Check (para que Koyeb no mate el servidor)
+        if scope["path"] in ["/health", "/"]:
+            await self.app(scope, receive, send)
+            return
+
+        # C. Lógica de Seguridad
         server_api_key = os.getenv("MCP_API_KEY")
         
-        # Modo DEV: Si no hay clave configurada en el servidor, pasa todo
-        if not server_api_key:
-            return await call_next(request)
+        # Si hay clave configurada, verificamos
+        if server_api_key:
+            # En ASGI, los headers vienen en bytes y como lista de tuplas
+            headers = dict(scope.get("headers", []))
+            
+            # Buscamos 'authorization' (siempre en minúsculas en ASGI)
+            auth_header_bytes = headers.get(b"authorization", b"")
+            auth_header = auth_header_bytes.decode("utf-8")
+            
+            expected = f"Bearer {server_api_key}"
+            
+            if auth_header != expected:
+                # Si falla, cortamos aquí y devolvemos 401
+                response = JSONResponse(
+                    status_code=401, 
+                    content={"error": "Unauthorized: Invalid API Key"}
+                )
+                await response(scope, receive, send)
+                return
 
-        auth_header = request.headers.get("Authorization")
-        
-        # Validación estricta: "Bearer TU_CLAVE"
-        if not auth_header or auth_header != f"Bearer {server_api_key}":
-            return JSONResponse(
-                status_code=401, 
-                content={"error": "Unauthorized: Invalid or missing API Key"}
-            )
-        
-        return await call_next(request)
+        # D. Si todo está bien, pasamos la bola a la app original (Streaming intacto)
+        await self.app(scope, receive, send)
 
-# 3. INYECCIÓN DEL MIDDLEWARE (CORREGIDO)
-# Usamos _fastapi_app porque la librería lo mantiene como privado
+# 3. Inyección del Middleware
+# Usamos .add_middleware con nuestra clase ASGI pura
 if hasattr(mcp, '_fastapi_app'):
-    mcp._fastapi_app.add_middleware(AuthMiddleware)
+    mcp._fastapi_app.add_middleware(SecureASGIMiddleware)
 else:
-    # Bloque de debug por si la librería cambia de versión
-    print("ADVERTENCIA: No se pudo encontrar _fastapi_app. Buscando atributos disponibles...")
-    print(dir(mcp)) 
-    # Si ves esto en los logs, significa que el nombre interno es otro.
+    print("WARNING: No se pudo inyectar seguridad. '_fastapi_app' no encontrado.")
 
 # 4. Conexión BD
 MONGO_URI = os.getenv("MONGO_URI")
@@ -62,15 +76,13 @@ def run_aggregation(
     toolCallId: str = ""            
 ) -> str:
     try:
+        # Validación de seguridad extra: Evitar inyección en colecciones del sistema
         if collection_name not in db.list_collection_names():
              return f"Error: La colección '{collection_name}' no existe."
 
         target_collection = db[collection_name]
         pipeline = json.loads(pipeline_json)
         
-        # Opcional: Forzar límite aquí también por seguridad
-        # pipeline.append({"$limit": 5})
-
         cursor = target_collection.aggregate(pipeline)
         results = list(cursor)
         return json_util.dumps(results)
