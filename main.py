@@ -13,7 +13,8 @@ client = MongoClient(MONGO_URI)
 db = client["sample_mflix"]
 
 @mcp.tool()
-def run_aggregation(collection_name: str, pipeline_json: str) -> str:
+@mcp.tool()
+def run_aggregation(collection_name: str, pipeline_json: str, **kwargs) -> str:
     """
     Ejecuta un pipeline de agregación en MongoDB.
     Args:
