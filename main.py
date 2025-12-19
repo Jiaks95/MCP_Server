@@ -2,7 +2,8 @@ from fastmcp import FastMCP
 from pymongo import MongoClient
 import os
 import json
-from bson import json_util 
+from bson import json_util
+from typing import Optional, Dict, Any
 
 # Definición del servidor
 mcp = FastMCP("CineMCP")
@@ -12,15 +13,22 @@ MONGO_URI = os.getenv("MONGO_URI")
 client = MongoClient(MONGO_URI)
 db = client["sample_mflix"]
 
-# NOTA: Añadimos **kwargs para absorber los metadatos extra que envía n8n
 @mcp.tool()
-def run_aggregation(collection_name: str, pipeline_json: str, **kwargs) -> str:
+def run_aggregation(
+    collection_name: str, 
+    pipeline_json: str,
+    # --- PARÁMETROS DE ABSORCIÓN PARA N8N ---
+    # Los definimos explícitamente para evitar el error de **kwargs
+    update_id: Optional[int] = None,
+    message: Optional[Dict[str, Any]] = None,
+    toolCallId: Optional[str] = None
+) -> str:
     """
     Ejecuta un pipeline de agregación en MongoDB.
     Args:
         collection_name: 'movies', 'comments', etc.
         pipeline_json: Array JSON. Ej: '[{"$match": ...}]'
-        **kwargs: Captura argumentos extra enviados por n8n (update_id, etc.) para evitar errores.
+        update_id, message, toolCallId: Metadatos de n8n (ignorados).
     """
     try:
         if collection_name not in db.list_collection_names():
