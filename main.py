@@ -5,98 +5,26 @@ import json
 from bson import json_util
 from typing import Dict, Any
 import certifi
+import uvicorn  # <--- IMPORTANTE: Importamos el servidor nosotros mismos
 
-# Imports del sistema
+# Imports del sistema ASGI
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Scope, Receive, Send
 
-# 1. Definición del servidor
+# --- 1. Definición del servidor y Tools ---
 mcp = FastMCP("CineMCP")
 
-# 2. Middleware "Paranoico" (Fail-Close)
-class ParanoidMiddleware:
-    def __init__(self, app: ASGIApp):
-        self.app = app
-        # Leemos la clave UNA sola vez al inicio para ver si existe
-        self.api_key = os.getenv("MCP_API_KEY")
-        if not self.api_key:
-            print("🚨 PELIGRO: NO SE DETECTÓ 'MCP_API_KEY' EN EL ENTORNO.")
-            print("🚨 EL SERVIDOR RECHAZARÁ TODAS LAS CONEXIONES POR SEGURIDAD.")
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        # Solo filtramos HTTP (dejamos pasar el ciclo de vida de la app)
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        # Excepción para Health Checks (para que Koyeb no mate el servicio)
-        if scope["path"] in ["/", "/health"]:
-            await self.app(scope, receive, send)
-            return
-
-        # --- LOGGING EN VIVO ---
-        # Imprimimos quién intenta entrar
-        print(f"🔒 ACCESO: Intento de conexión a ruta: {scope['path']}")
-
-        # --- REGLA 1: SI NO HAY CLAVE CONFIGURADA EN KOYEB, NADIE ENTRA ---
-        if not self.api_key:
-            print("❌ BLOQUEADO: Error de configuración del servidor (Falta API Key)")
-            response = JSONResponse(
-                status_code=500, 
-                content={"error": "SERVER SECURITY CONFIG ERROR: API Key missing in environment"}
-            )
-            await response(scope, receive, send)
-            return
-
-        # --- REGLA 2: VALIDAR EL HEADER ---
-        headers = dict(scope.get("headers", []))
-        auth_header_bytes = headers.get(b"authorization", b"")
-        auth_header = auth_header_bytes.decode("utf-8")
-        
-        # Debemos ser estrictos: "Bearer <CLAVE>"
-        expected_token = f"Bearer {self.api_key}"
-
-        if auth_header != expected_token:
-            # Chivato en los logs para ver qué enviaron (ocultando parte por seguridad)
-            received_preview = auth_header[:10] + "..." if auth_header else "EMPTY"
-            print(f"❌ BLOQUEADO: Credencial inválida. Recibido: '{received_preview}'")
-            
-            response = JSONResponse(
-                status_code=401, 
-                content={"error": "Unauthorized: Access Denied"}
-            )
-            await response(scope, receive, send)
-            return
-
-        # Si pasa todo, entra
-        print("✅ ACCESO CONCEDIDO")
-        await self.app(scope, receive, send)
-
-# 3. Inyección Robusta
-# Buscamos la app oculta de FastMCP
-app_found = None
-possible_attrs = ['_fastapi_app', 'fastapi_app', '_http_app', 'http_app']
-
-for attr in possible_attrs:
-    if hasattr(mcp, attr):
-        app_found = getattr(mcp, attr)
-        if callable(app_found):
-             try:
-                app_found = app_found()
-             except:
-                continue
-        break
-
-if app_found:
-    print("🛡️ SEGURIDAD ACTIVADA: Inyectando Middleware Paranoico...")
-    app_found.add_middleware(ParanoidMiddleware)
-else:
-    print("💀 ERROR CRÍTICO: No se pudo inyectar seguridad. El servidor está vulnerable.")
-
-# 4. Base de Datos
+# Conexión Base de Datos
 MONGO_URI = os.getenv("MONGO_URI")
-client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
-db = client["sample_mflix"]
+# Fail-safe para local testing
+if not MONGO_URI:
+    MONGO_URI = "mongodb://localhost:27017" # Dummy
+    
+try:
+    client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
+    db = client["sample_mflix"]
+except Exception as e:
+    print(f"Error DB Connection: {e}")
 
 @mcp.tool()
 def run_aggregation(
@@ -118,5 +46,76 @@ def run_aggregation(
     except Exception as e:
         return f"Error ejecutando pipeline: {str(e)}"
 
+# --- 2. Middleware de Seguridad (El Guardián) ---
+class SecurityWrapper:
+    def __init__(self, app: ASGIApp):
+        self.app = app
+        self.api_key = os.getenv("MCP_API_KEY")
+        
+        # Log inicial de estado
+        if self.api_key:
+            print(f"🔒 SEGURIDAD: Middleware cargado. Clave configurada (Longitud: {len(self.api_key)})")
+        else:
+            print("🚨 CRÍTICO: No hay MCP_API_KEY. El servidor rechazará todo por defecto.")
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        # Dejar pasar health checks y metadatos del protocolo
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "/")
+        if path in ["/", "/health"]:
+            await self.app(scope, receive, send)
+            return
+
+        # LOG CHIVATO: Para confirmar que el código se ejecuta
+        print(f"👀 INTERCEPTADO: Petición a {path}")
+
+        # 1. Fail-Close: Si no hay clave en el servidor, error 500
+        if not self.api_key:
+            print("❌ BLOQUEADO: Falta configuración de API Key en servidor.")
+            response = JSONResponse(status_code=500, content={"error": "Server Security Config Missing"})
+            await response(scope, receive, send)
+            return
+
+        # 2. Verificar Header
+        headers = dict(scope.get("headers", []))
+        auth_header = headers.get(b"authorization", b"").decode("utf-8")
+        expected = f"Bearer {self.api_key}"
+
+        if auth_header != expected:
+            print(f"🚫 RECHAZADO: Credencial incorrecta.")
+            response = JSONResponse(status_code=401, content={"error": "Unauthorized"})
+            await response(scope, receive, send)
+            return
+
+        # 3. Éxito
+        print("✅ PASE CONCEDIDO")
+        await self.app(scope, receive, send)
+
+
+# --- 3. EXTRACCIÓN Y EMPAQUETADO (Aquí está el cambio clave) ---
+
+# Intentamos sacar la app interna de FastMCP
+internal_app = None
+if hasattr(mcp, '_fastapi_app'):
+    internal_app = mcp._fastapi_app
+elif hasattr(mcp, 'fastapi_app'):
+    internal_app = mcp.fastapi_app
+elif hasattr(mcp, 'http_app'): # A veces es un método
+     internal_app = mcp.http_app()
+
+if not internal_app:
+    raise RuntimeError("No se pudo extraer la aplicación FastAPI interna de FastMCP.")
+
+# ENVOLVEMOS la app interna con nuestro guardián
+# Esto crea una nueva app 'final_app' donde la entrada ES el middleware.
+final_app = SecurityWrapper(internal_app)
+
+
+# --- 4. EJECUCIÓN MANUAL ---
 if __name__ == "__main__":
-    mcp.run(transport="http", host="0.0.0.0", port=8000)
+    # En lugar de mcp.run(), usamos uvicorn directamente sobre nuestra app protegida
+    print("🚀 Arrancando servidor protegido manualmente con Uvicorn...")
+    uvicorn.run(final_app, host="0.0.0.0", port=8000)
